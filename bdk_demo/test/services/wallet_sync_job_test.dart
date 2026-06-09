@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:bdk_dart/bdk.dart';
 import 'package:bdk_demo/core/constants/app_constants.dart';
@@ -82,6 +83,31 @@ final class _FakeSyncBackend implements WalletSyncBackend {
 
 void _noopApply(Wallet wallet) {}
 
+WalletSyncRequest _syncRequest({
+  required String walletId,
+  required String descriptor,
+  required String changeDescriptor,
+  required String walletNetworkName,
+  required String sqlitePath,
+  required bool fullScanCompleted,
+  int? syncTimeoutSeconds,
+}) {
+  final network = WalletNetwork.values.byName(walletNetworkName);
+  final endpoint = defaultEndpoints[network]!;
+  return WalletSyncRequest(
+    walletId: walletId,
+    descriptor: descriptor,
+    changeDescriptor: changeDescriptor,
+    walletNetworkName: walletNetworkName,
+    sqlitePath: sqlitePath,
+    fullScanCompleted: fullScanCompleted,
+    endpointUrl: endpoint.url,
+    endpointClientType: endpoint.clientType,
+    syncTimeoutSeconds:
+        syncTimeoutSeconds ?? AppConstants.syncTimeout.inSeconds,
+  );
+}
+
 void main() {
   group('executeWalletSync', () {
     test('full scan path uses backend fullScan for regtest', () async {
@@ -91,7 +117,7 @@ void main() {
       var incrementalCalls = 0;
 
       final result = await executeWalletSync(
-        WalletSyncRequest(
+        _syncRequest(
           walletId: 'wallet-a',
           descriptor: fixture.descriptor,
           changeDescriptor: fixture.changeDescriptor,
@@ -99,7 +125,7 @@ void main() {
           sqlitePath: fixture.dbPath,
           fullScanCompleted: false,
         ),
-        backendFactory: (walletNetwork) {
+        backendFactory: (walletNetwork, endpoint, syncTimeout) {
           selectedNetwork = walletNetwork;
           return _FakeSyncBackend(
             onFullScan: () => fullScanCalls += 1,
@@ -124,7 +150,7 @@ void main() {
         var incrementalCalls = 0;
 
         final result = await executeWalletSync(
-          WalletSyncRequest(
+          _syncRequest(
             walletId: 'wallet-b',
             descriptor: fixture.descriptor,
             changeDescriptor: fixture.changeDescriptor,
@@ -132,7 +158,7 @@ void main() {
             sqlitePath: fixture.dbPath,
             fullScanCompleted: true,
           ),
-          backendFactory: (walletNetwork) {
+          backendFactory: (walletNetwork, endpoint, syncTimeout) {
             selectedNetwork = walletNetwork;
             return _FakeSyncBackend(
               onFullScan: () => fullScanCalls += 1,
@@ -156,7 +182,7 @@ void main() {
         var loadCalls = 0;
 
         final result = await executeWalletSync(
-          WalletSyncRequest(
+          _syncRequest(
             walletId: 'wallet-c',
             descriptor: fixture.descriptor,
             changeDescriptor: fixture.changeDescriptor,
@@ -164,7 +190,7 @@ void main() {
             sqlitePath: fixture.dbPath,
             fullScanCompleted: false,
           ),
-          backendFactory: (_) => _FakeSyncBackend(onFullScan: () {}),
+          backendFactory: (_, __, ___) => _FakeSyncBackend(onFullScan: () {}),
           walletLoadRunner:
               ({
                 required Descriptor descriptor,
@@ -191,6 +217,53 @@ void main() {
           result.errorMessage,
           contains('Wallet SQLite persistence returned false.'),
         );
+      },
+    );
+
+    test('timeout inside sync job is returned as timeout failure', () async {
+      final fixture = await _createSqliteWalletFixture(WalletNetwork.testnet);
+
+      final result = await executeWalletSync(
+        _syncRequest(
+          walletId: 'wallet-timeout',
+          descriptor: fixture.descriptor,
+          changeDescriptor: fixture.changeDescriptor,
+          walletNetworkName: WalletNetwork.testnet.name,
+          sqlitePath: fixture.dbPath,
+          fullScanCompleted: false,
+        ),
+        backendFactory: (_, __, ___) => _FakeSyncBackend(
+          onFullScan: () => throw TimeoutException('sync timed out'),
+        ),
+      );
+
+      expect(result.success, isFalse);
+      expect(result.failureKind, WalletSyncFailureKind.timeout);
+    });
+
+    test(
+      'near-timeout Electrum all-attempts failure is returned as timeout',
+      () async {
+        final fixture = await _createSqliteWalletFixture(WalletNetwork.signet);
+
+        final result = await executeWalletSync(
+          _syncRequest(
+            walletId: 'wallet-all-attempts-timeout',
+            descriptor: fixture.descriptor,
+            changeDescriptor: fixture.changeDescriptor,
+            walletNetworkName: WalletNetwork.signet.name,
+            sqlitePath: fixture.dbPath,
+            fullScanCompleted: false,
+            syncTimeoutSeconds: 0,
+          ),
+          backendFactory: (_, __, ___) => _FakeSyncBackend(
+            onFullScan: () =>
+                throw StateError('AllAttemptsErroredElectrumException'),
+          ),
+        );
+
+        expect(result.success, isFalse);
+        expect(result.failureKind, WalletSyncFailureKind.timeout);
       },
     );
   });

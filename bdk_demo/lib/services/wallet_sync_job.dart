@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'package:bdk_dart/bdk.dart';
 import 'package:bdk_demo/core/constants/app_constants.dart';
@@ -13,6 +14,9 @@ class WalletSyncRequest {
     required this.walletNetworkName,
     required this.sqlitePath,
     required this.fullScanCompleted,
+    required this.endpointUrl,
+    required this.endpointClientType,
+    required this.syncTimeoutSeconds,
   });
 
   final String walletId;
@@ -21,7 +25,12 @@ class WalletSyncRequest {
   final String walletNetworkName;
   final String sqlitePath;
   final bool fullScanCompleted;
+  final String endpointUrl;
+  final ClientType endpointClientType;
+  final int syncTimeoutSeconds;
 }
+
+enum WalletSyncFailureKind { generic, timeout }
 
 class WalletSyncResult {
   const WalletSyncResult._({
@@ -29,6 +38,7 @@ class WalletSyncResult {
     required this.walletId,
     required this.performedFullScan,
     this.errorMessage,
+    this.failureKind,
   });
 
   factory WalletSyncResult.success({
@@ -44,23 +54,30 @@ class WalletSyncResult {
     required String walletId,
     required String errorMessage,
     required bool performedFullScan,
+    WalletSyncFailureKind failureKind = WalletSyncFailureKind.generic,
   }) => WalletSyncResult._(
     success: false,
     walletId: walletId,
     performedFullScan: performedFullScan,
     errorMessage: errorMessage,
+    failureKind: failureKind,
   );
 
   final bool success;
   final String walletId;
   final bool performedFullScan;
   final String? errorMessage;
+  final WalletSyncFailureKind? failureKind;
 }
 
 typedef WalletSyncJobRunner =
     Future<WalletSyncResult> Function(WalletSyncRequest request);
 typedef WalletSyncBackendFactory =
-    WalletSyncBackend Function(WalletNetwork walletNetwork);
+    WalletSyncBackend Function(
+      WalletNetwork walletNetwork,
+      EndpointConfig endpoint,
+      int syncTimeoutSeconds,
+    );
 
 Future<WalletSyncResult> defaultWalletSyncJobRunner(WalletSyncRequest request) {
   return Isolate.run(() async {
@@ -178,8 +195,9 @@ final class ElectrumWalletSyncBackend implements WalletSyncBackend {
 
 WalletSyncBackend _defaultWalletSyncBackendFactory(
   WalletNetwork walletNetwork,
+  EndpointConfig endpoint,
+  int syncTimeoutSeconds,
 ) {
-  final endpoint = defaultEndpoints[walletNetwork]!;
   return switch (endpoint.clientType) {
     ClientType.esplora => EsploraWalletSyncBackend(
       EsploraClient(url: endpoint.url, proxy: null),
@@ -188,7 +206,7 @@ WalletSyncBackend _defaultWalletSyncBackendFactory(
       ElectrumClient(
         url: endpoint.url,
         socks5: null,
-        timeout: null,
+        timeout: syncTimeoutSeconds,
         retry: null,
         validateDomain: true,
       ),
@@ -219,6 +237,7 @@ Future<WalletSyncResult> executeWalletSync(
   SqliteLoadRunner? walletLoadRunner,
   SqlitePersistRunner? persistRunner,
 }) async {
+  final syncStopwatch = Stopwatch()..start();
   Wallet? wallet;
   WalletSyncBackend? backend;
   Descriptor? descriptor;
@@ -252,6 +271,8 @@ Future<WalletSyncResult> executeWalletSync(
 
     backend = (backendFactory ?? _defaultWalletSyncBackendFactory)(
       walletNetwork,
+      EndpointConfig(clientType: req.endpointClientType, url: req.endpointUrl),
+      req.syncTimeoutSeconds,
     );
     final execution = performedFullScan
         ? backend.fullScan(wallet)
@@ -272,17 +293,52 @@ Future<WalletSyncResult> executeWalletSync(
       walletId: req.walletId,
       performedFullScan: performedFullScan,
     );
+  } on TimeoutException catch (e, st) {
+    return WalletSyncResult.failure(
+      walletId: req.walletId,
+      performedFullScan: performedFullScan,
+      errorMessage: '$e\n$st',
+      failureKind: WalletSyncFailureKind.timeout,
+    );
   } catch (e, st) {
     return WalletSyncResult.failure(
       walletId: req.walletId,
       performedFullScan: performedFullScan,
       errorMessage: '$e\n$st',
+      failureKind: _classifySyncFailure(
+        e,
+        elapsed: syncStopwatch.elapsed,
+        timeoutSeconds: req.syncTimeoutSeconds,
+      ),
     );
   } finally {
+    syncStopwatch.stop();
     wallet?.dispose();
     backend?.dispose();
     persister?.dispose();
     descriptor?.dispose();
     changeDescriptor?.dispose();
   }
+}
+
+WalletSyncFailureKind _classifySyncFailure(
+  Object error, {
+  required Duration elapsed,
+  required int timeoutSeconds,
+}) {
+  final timeoutWindow = Duration(seconds: timeoutSeconds);
+  final timeoutLikeBuffer = const Duration(seconds: 3);
+  final timeoutLikeThreshold = timeoutWindow > timeoutLikeBuffer
+      ? timeoutWindow - timeoutLikeBuffer
+      : Duration.zero;
+  final nearTimeout = elapsed >= timeoutLikeThreshold;
+  final allAttemptsErrored = error.toString().contains(
+    'AllAttemptsErroredElectrumException',
+  );
+
+  if (nearTimeout && allAttemptsErrored) {
+    return WalletSyncFailureKind.timeout;
+  }
+
+  return WalletSyncFailureKind.generic;
 }

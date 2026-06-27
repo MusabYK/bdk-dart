@@ -1,3 +1,10 @@
+# Allow experimental features like [group(...)]
+set unstable := true
+
+set shell := ["sh", "-c"]
+
+set windows-shell := ["powershell.exe", "-Command"]
+
 [group("Repo")]
 [doc("Default command; list all available commands.")]
 @list:
@@ -6,7 +13,11 @@
 [group("Repo")]
 [doc("Open repo on GitHub in your default browser.")]
 repo:
-  open https://github.com/bitcoindevkit/bdk-dart
+  {{ if os() == "windows" {
+     "Start-Process https://github.com/bitcoindevkit/bdk-dart" 
+    } else {
+     "open https://github.com/bitcoindevkit/bdk-dart" 
+    } }}
 
 [group("Dart")]
 [doc("Format the Dart codebase.")]
@@ -31,17 +42,29 @@ test *ARGS:
 [group("Bindings")]
 [doc("Build native library and regenerate bindings.")]
 generate-bindings:
-  bash ./scripts/generate_bindings.sh
+  {{ if os() == "windows" {
+        "cd native; cargo build --profile dev; cargo run --profile dev --bin uniffi-bindgen -- generate --library target\\debug\\bdk_dart_ffi.dll --language dart --config uniffi.toml --out-dir ..\\lib\\"
+    } else {
+        "bash ./scripts/generate_bindings.sh"
+    } }}
 
 [group("Demo")]
 [doc("Run Flutter analysis for the demo app.")]
 demo-analyze:
-  cd bdk_demo && flutter analyze
+  {{ if os() == "windows" { 
+      "cd bdk_demo ; flutter analyze" 
+    } else {
+      "cd bdk_demo && flutter analyze" 
+    } }}
 
 [group("Demo")]
 [doc("Run Flutter tests for the demo app.")]
 demo-test *ARGS:
-  cd bdk_demo && flutter test {{ if ARGS == "" { "" } else { ARGS } }}
+  {{ if os() == "windows" {
+        "cd bdk_demo ; flutter test " + (if ARGS == "" { "" } else { ARGS })
+    } else {
+        "cd bdk_demo && flutter test " + (if ARGS == "" { "" } else { ARGS })
+    } }}
 
 [group("CI")]
 [doc("Run the same checks as CI.")]
@@ -55,11 +78,8 @@ ci:
 [group("Dart")]
 [doc("Remove build and tool artifacts to start fresh.")]
 clean:
-  rm -rf .dart_tool/
-  rm -rf build/
-  rm -rf native/target/
-  rm -rf coverage/
-  rm -rf bdk_demo/.dart_tool/
-  rm -rf bdk_demo/build/
-  rm -rf example/.dart_tool/
-  rm -rf example/build/
+  {{ if os() == "windows" {
+        "'.dart_tool', 'build', 'native/target', 'coverage', 'bdk_demo/.dart_tool', 'bdk_demo/build', 'example/.dart_tool', 'example/build' | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item -Recurse -Force $_ }"
+    } else {
+        "rm -rf .dart_tool/ build/ native/target/ coverage/ bdk_demo/.dart_tool/ bdk_demo/build/ example/.dart_tool/ example/build/"
+    } }}

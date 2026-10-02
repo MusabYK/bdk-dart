@@ -5,7 +5,7 @@ set shell := ["sh", "-c"]
 
 set windows-shell := ["powershell.exe", "-Command"]
 
-windows_generate_bindings := "dart --version; if (-not $?) { exit 1 }; dart pub get; if (-not $?) { exit 1 }; cd native; if (-not $?) { exit 1 }; cargo build --profile dev; if (-not $?) { exit 1 }; cargo run --profile dev --bin uniffi-bindgen -- generate --library target/debug/bdk_dart_ffi.dll --language dart --config uniffi.toml --out-dir ../lib/"
+windows_generate_bindings := "dart --version; if (-not $?) { exit 1 }; dart pub get; if (-not $?) { exit 1 }; cd native; if (-not $?) { exit 1 }; cargo build --locked --profile dev; if (-not $?) { exit 1 }; cargo run --locked --profile dev --bin uniffi-bindgen -- generate --library target/debug/bdk_dart_ffi.dll --language dart --config uniffi.toml --out-dir ../lib/; if (-not $?) { exit 1 }; dart format ../lib"
 
 unix_generate_bindings := "bash ./scripts/generate_bindings.sh"
 
